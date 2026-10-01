@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>송아지 대탈출</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f3efd8;--ink:#3b2a14;--panel:#fffaf0;--path:#cfe6a0;--wall:#7a4b25;--wallhi:#a8703a;--food:#f2b705;--btn:#d9531e;--btnink:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1f2616;--ink:#f1ead2;--panel:#2e3820;--path:#8db35a;--wall:#4e3114;--wallhi:#7a4b25}}
+:root[data-theme="dark"]{--bg:#1f2616;--ink:#f1ead2;--panel:#2e3820;--path:#8db35a;--wall:#4e3114;--wallhi:#7a4b25}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:"Jua","Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;display:flex;flex-direction:column;overscroll-behavior:none;touch-action:none;user-select:none;-webkit-user-select:none}
+#hud{display:flex;justify-content:space-between;align-items:center;padding:3px 8px;font-size:15px;font-weight:700;gap:6px}
+#hud span{white-space:nowrap}
+#tp{background:var(--wall);color:#fff;border-radius:10px;font-size:16px;padding:2px 8px}
+#pad.hide{display:none}
+#stage{flex:1;min-height:0;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden}
+canvas{display:block;border-radius:6px}
+#ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(30,20,8,.55)}
+#ov.hide{display:none}
+#card{background:var(--panel);color:var(--ink);border-radius:18px;padding:22px 24px;text-align:center;max-width:290px;box-shadow:0 8px 28px rgba(0,0,0,.35)}
+#card h2{margin:0 0 8px;font-size:26px}
+#card p{margin:0 0 16px;line-height:1.5;font-size:15px}
+button{font:inherit;font-weight:700;border:0;cursor:pointer}
+#go{background:var(--btn);color:var(--btnink);font-size:18px;padding:11px 28px;border-radius:999px}
+#toast{position:absolute;top:8px;left:50%;transform:translateX(-50%);background:var(--wall);color:#fff;padding:6px 14px;border-radius:999px;font-size:14px;font-weight:700;opacity:0;transition:opacity .25s;pointer-events:none;white-space:nowrap}
+#toast.on{opacity:1}
+#pad{display:grid;grid-template-columns:repeat(3,56px);grid-template-rows:repeat(2,50px);gap:6px;justify-content:center;padding:6px 0 12px}
+#pad button{background:var(--wall);color:#fff;border-radius:14px;font-size:20px;touch-action:none}
+#pad button:active{background:var(--wallhi)}
+</style>
+</head>
+<body>
+<div id="hud"><span id="hs"></span><span id="hf"></span><span id="ht"></span><span id="hl"></span><button id="tp">🎮</button></div>
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div id="toast"></div>
+  <div id="ov"><div id="card"><h2 id="ot"></h2><p id="om"></p><button id="go"></button></div></div>
+</div>
+<div id="pad" class="hide">
+  <span></span><button data-d="0,-1">▲</button><span></span>
+  <button data-d="-1,0">◀</button><button data-d="0,1">▼</button><button data-d="1,0">▶</button>
+</div>
+<script>
+const COLS=11,ROWS=15,MAXS=10,$=id=>document.getElementById(id);
+const cv=$('cv'),ctx=cv.getContext('2d');
+let cell=20,dpr=1,layer=null,G=null,last=0,toastT=0;
+const HOMES=[[COLS-2,1],[1,1],[COLS-2,ROWS-2]];
+
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+function makeMaze(s){
+  const r=rng(s*7919+13),g=Array.from({length:ROWS},()=>Array(COLS).fill(1));
+  const st=[[1,1]];g[1][1]=0;
+  while(st.length){
+    const[x,y]=st[st.length-1];
+    const n=[[2,0],[-2,0],[0,2],[0,-2]].filter(([a,b])=>{const X=x+a,Y=y+b;return X>0&&Y>0&&X<COLS-1&&Y<ROWS-1&&g[Y][X]});
+    if(!n.length){st.pop();continue}
+    const[a,b]=n[(r()*n.length)|0];
+    g[y+b/2][x+a/2]=0;g[y+b][x+a]=0;st.push([x+a,y+b]);
+  }
+  let k=Math.max(8,22-s),tries=0;
+  while(k>0&&tries++<600){
+    const x=1+((r()*(COLS-2))|0),y=1+((r()*(ROWS-2))|0);
+    if(!g[y][x])continue;
+    const h=!g[y][x-1]&&!g[y][x+1],v=!g[y-1][x]&&!g[y+1][x];
+    if(h!==v){g[y][x]=0;k--}
+  }
+  return g;
+}
+
+const free=(x,y)=>G.grid[y]&&G.grid[y][x]===0;
+const tigerSpeed=()=>1.8+0.19*(G.stage-1);   // 항상 송아지(4.8)보다 느림
+const chase=()=>0.35+0.05*G.stage;
+
+function mk(x,y,sp){return{x,y,dx:0,dy:0,f:0,sp,want:[0,0]}}
+
+function begin(n,fresh){
+  G={stage:n,grid:makeMaze(n),food:[],left:0,lives:3,t:0,spawned:false,grace:1,hitT:0,farts:[],state:'play'};
+  for(let y=0;y<ROWS;y++){G.food.push([]);for(let x=0;x<COLS;x++){const f=G.grid[y][x]===0?1:0;G.food[y].push(f);G.left+=f}}
+  G.food[ROWS-2][1]=0;G.left--;
+  G.p=mk(1,ROWS-2,4.8);
+  G.tigers=[mk(HOMES[0][0],HOMES[0][1],tigerSpeed())];
+  buildLayer();hud();$('ov').classList.add('hide');toast('스테이지 '+n);
+}
+
+function step(e,dt,pick,arrive){
+  let s=e.sp*dt;
+  while(s>1e-6&&G.state==='play'){
+    if(e.dx||e.dy){
+      const need=1-e.f;
+      if(s<need){e.f+=s;s=0}
+      else{s-=need;e.x+=e.dx;e.y+=e.dy;e.f=0;if(arrive)arrive(e);if(G.state!=='play')return;pick(e)}
+    }else{pick(e);if(!(e.dx||e.dy))break}
+  }
+}
+function pickP(p){
+  const[wx,wy]=p.want;
+  if((wx||wy)&&free(p.x+wx,p.y+wy)){p.dx=wx;p.dy=wy}
+  else if(!(p.dx||p.dy)||!free(p.x+p.dx,p.y+p.dy)){p.dx=0;p.dy=0}
+}
+function arriveP(p){
+  if(G.food[p.y][p.x]){
+    G.food[p.y][p.x]=0;G.left--;hud();
+    if(G.left<=0){
+      G.state='clear';
+      if(G.stage>=MAXS)show('🎉 모두 클리어!','10개 스테이지를 모두 통과했어요. 대단해요!','처음부터',()=>begin(1));
+      else show('스테이지 '+G.stage+' 클리어! ⭐','먹이를 다 먹었어요. 다음에는 호랑이가 조금 더 빨라져요.','다음 스테이지',()=>begin(G.stage+1));
+    }
+  }
+}
+const D=[[1,0],[-1,0],[0,1],[0,-1]];
+function pickT(t){
+  let o=D.filter(([a,b])=>free(t.x+a,t.y+b)&&!((t.dx||t.dy)&&a===-t.dx&&b===-t.dy));
+  if(!o.length)o=D.filter(([a,b])=>free(t.x+a,t.y+b));
+  const p=G.p,px=Math.round(p.x+p.dx*p.f),py=Math.round(p.y+p.dy*p.f);
+  let c;
+  if(Math.random()<chase()){
+    const d=m=>(t.x+m[0]-px)**2+(t.y+m[1]-py)**2;
+    c=o.reduce((a,b)=>d(b)<d(a)?b:a);
+  }else c=o[(Math.random()*o.length)|0];
+  t.dx=c[0];t.dy=c[1];
+}
+
+const FART_LIFE=2,FART_CH=['미','영','방','귀'];
+function arriveT(t){
+  G.farts=G.farts.filter(f=>!(f.x===t.x&&f.y===t.y));
+  const ch=FART_CH[(G.fi||0)%4];G.fi=(G.fi||0)+1;
+  G.farts.push({x:t.x,y:t.y,life:FART_LIFE,ch});
+  while(G.farts.length>4)G.farts.shift();
+}
+
+function setDir(dx,dy){
+  if(!G||G.state!=='play')return;
+  const p=G.p;p.want=[dx,dy];
+  if((p.dx||p.dy)&&p.dx===-dx&&p.dy===-dy){p.x+=p.dx;p.y+=p.dy;p.f=1-p.f;p.dx=-p.dx;p.dy=-p.dy}
+}
+const pos=e=>[e.x+e.dx*e.f,e.y+e.dy*e.f];
+
+function update(dt){
+  if(!G)return;
+  if(G.state==='hit'){G.hitT-=dt;if(G.hitT<=0)afterHit();return}
+  if(G.state!=='play')return;
+  G.t+=dt;
+  if(!G.spawned&&G.t>=30){
+    G.spawned=true;
+    const[px,py]=pos(G.p);
+    const h=HOMES.reduce((a,b)=>Math.hypot(b[0]-px,b[1]-py)>Math.hypot(a[0]-px,a[1]-py)?b:a);
+    G.tigers.push(mk(h[0],h[1],tigerSpeed()));
+    toast('🐯 호랑이가 한 마리 더 나타났어요!');
+  }
+  if(G.grace>0)G.grace-=dt;
+  G.farts.forEach(f=>f.life-=dt);G.farts=G.farts.filter(f=>f.life>0);
+  step(G.p,dt,pickP,arriveP);
+  if(G.state!=='play')return;
+  if(G.grace<=0)G.tigers.forEach(t=>step(t,dt,pickT,arriveT));
+  const[px,py]=pos(G.p);
+  let why='';
+  for(const t of G.tigers){
+    const[tx,ty]=pos(t);
+    if(Math.hypot(tx-px,ty-py)<0.7){why='앗! 잡혔어요';break}
+  }
+  if(!why&&G.farts.some(f=>Math.hypot(f.x-px,f.y-py)<0.55))why='으악, 방귀 냄새! 💨';
+  if(why){G.lives--;G.state='hit';G.hitT=1.1;toast(why)}
+  hud();
+}
+function afterHit(){
+  if(G.lives<=0){G.state='over';hud();show('게임 오버','호랑이한테 잡혔어요. 스테이지 '+G.stage+'에 다시 도전해요!','다시 도전',()=>begin(G.stage));return}
+  G.p=mk(1,ROWS-2,4.8);
+  G.tigers.forEach((t,i)=>{const h=HOMES[i%HOMES.length];Object.assign(t,mk(h[0],h[1],tigerSpeed()))});
+  G.farts=[];G.fi=0;G.grace=1.2;G.state='play';hud();
+}
+
+function hud(){
+  $('hs').textContent='🌾 '+G.stage+'/'+MAXS;
+  $('hf').textContent='먹이 '+G.left;
+  $('ht').textContent=G.spawned?'🐯 '+G.tigers.length+'마리':'🐯+1 '+Math.max(0,Math.ceil(30-G.t))+'초';
+  $('hl').textContent='❤️'.repeat(Math.max(0,G.lives));
+}
+function show(t,m,b,fn){
+  $('ot').textContent=t;$('om').textContent=m;$('go').textContent=b;
+  $('go').onclick=fn;$('ov').classList.remove('hide');
+}
+function toast(m){
+  const el=$('toast');el.textContent=m;el.classList.add('on');
+  clearTimeout(toastT);toastT=setTimeout(()=>el.classList.remove('on'),1800);
+}
+
+function fit(){
+  const w=$('stage').clientWidth,h=$('stage').clientHeight;
+  cell=Math.max(10,Math.floor(Math.min(w/COLS,h/ROWS)));
+  dpr=window.devicePixelRatio||1;
+  cv.style.width=cell*COLS+'px';cv.style.height=cell*ROWS+'px';
+  cv.width=cell*COLS*dpr;cv.height=cell*ROWS*dpr;
+  buildLayer();
+}
+function buildLayer(){
+  if(!G)return;
+  const cs=getComputedStyle(document.documentElement);
+  const c=document.createElement('canvas');c.width=cell*COLS*dpr;c.height=cell*ROWS*dpr;
+  const k=c.getContext('2d');k.scale(dpr,dpr);
+  const path=cs.getPropertyValue('--path'),wall=cs.getPropertyValue('--wall'),hi=cs.getPropertyValue('--wallhi');
+  for(let y=0;y<ROWS;y++)for(let x=0;x<COLS;x++){
+    if(G.grid[y][x]===0){k.fillStyle=path;k.fillRect(x*cell,y*cell,cell,cell)}
+    else{k.fillStyle=wall;k.fillRect(x*cell,y*cell,cell,cell);k.fillStyle=hi;const i=Math.max(2,cell*.12);k.fillRect(x*cell+i,y*cell+i,cell-2*i,cell*.28)}
+  }
+  layer=c;
+}
+
+function draw(now){
+  if(!G||!layer)return;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cell*COLS,cell*ROWS);
+  ctx.drawImage(layer,0,0,cell*COLS,cell*ROWS);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font=Math.floor(cell*.62)+'px sans-serif';
+  for(let y=0;y<ROWS;y++)for(let x=0;x<COLS;x++)if(G.food[y][x])ctx.fillText('🌾',(x+.5)*cell,(y+.54)*cell);
+  ctx.font=Math.floor(cell*1.05)+'px sans-serif';
+  const ent=(e,ch)=>{const[x,y]=pos(e);ctx.fillText(ch,(x+.5)*cell,(y+.54)*cell)};
+  for(const f of G.farts){
+    const a=Math.min(1,f.life/.5),cx=(f.x+.5)*cell,cy=(f.y+.5)*cell;
+    ctx.globalAlpha=a*.6;ctx.fillStyle='#9ab82c';ctx.beginPath();ctx.arc(cx,cy,cell*.5,0,7);ctx.fill();
+    ctx.globalAlpha=a*.55;ctx.font=Math.floor(cell*.8)+'px sans-serif';ctx.fillText('💨',cx,cy+cell*.04);
+    ctx.globalAlpha=a;ctx.font='900 '+Math.floor(cell*.62)+'px "Jua","Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif';
+    ctx.lineWidth=cell*.1;ctx.lineJoin='round';ctx.strokeStyle='#3b2a14';ctx.strokeText(f.ch,cx,cy+cell*.03);
+    ctx.fillStyle='#fff';ctx.fillText(f.ch,cx,cy+cell*.03);
+  }
+  ctx.globalAlpha=1;ctx.font=Math.floor(cell*1.05)+'px sans-serif';
+  G.tigers.forEach(t=>ent(t,'🐯'));
+  if(G.state==='hit'&&Math.floor(now/120)%2)ctx.globalAlpha=.25;
+  ent(G.p,'🐮');
+  ctx.globalAlpha=1;
+}
+function loop(ts){
+  const dt=Math.min(.05,(ts-last)/1000||0);last=ts;
+  update(dt);draw(ts);requestAnimationFrame(loop);
+}
+
+// 조작: 스와이프, 방향 버튼, 키보드
+let sx=0,sy=0;
+const st=$('stage');
+st.addEventListener('touchstart',e=>{const t=e.changedTouches[0];sx=t.clientX;sy=t.clientY},{passive:true});
+st.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const t=e.changedTouches[0],dx=t.clientX-sx,dy=t.clientY-sy;
+  if(Math.max(Math.abs(dx),Math.abs(dy))>16){
+    Math.abs(dx)>Math.abs(dy)?setDir(Math.sign(dx),0):setDir(0,Math.sign(dy));
+    sx=t.clientX;sy=t.clientY;
+  }
+},{passive:false});
+document.querySelectorAll('#pad button').forEach(b=>b.addEventListener('pointerdown',e=>{
+  e.preventDefault();const[a,c]=b.dataset.d.split(',').map(Number);setDir(a,c);
+}));
+addEventListener('keydown',e=>{
+  const m={ArrowUp:[0,-1],ArrowDown:[0,1],ArrowLeft:[-1,0],ArrowRight:[1,0],w:[0,-1],s:[0,1],a:[-1,0],d:[1,0]}[e.key];
+  if(m){e.preventDefault();setDir(m[0],m[1])}
+});
+$('tp').onclick=()=>{$('pad').classList.toggle('hide');fit()};
+addEventListener('resize',fit);
+
+// 시작
+G={stage:1,grid:makeMaze(1),food:[],left:0,lives:3,t:0,spawned:false,grace:1,hitT:0,farts:[],state:'title',p:mk(1,ROWS-2,4.8),tigers:[]};
+for(let y=0;y<ROWS;y++){G.food.push(Array(COLS).fill(0))}
+fit();
+show('🐮 송아지 대탈출','호랑이를 피해 먹이를 모두 먹어요! 화면을 밀어서 움직여요. 오른쪽 위 🎮 버튼을 누르면 방향 버튼이 나와요. 30초가 지나면 호랑이가 한 마리 늘어나요. 호랑이가 지나간 자리에 미·영·방·귀 방귀가 2초 동안 남아요. 닿으면 아웃이니 조심해요!','시작',()=>begin(1));
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
